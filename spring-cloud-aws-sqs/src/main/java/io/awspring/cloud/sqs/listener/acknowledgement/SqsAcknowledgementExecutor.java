@@ -42,7 +42,8 @@ import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchRequestEntry;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchResponse;
 
 /**
- * {@link AcknowledgementExecutor} implementation for SQS queues. Handle the messages deletion, usually requested by an
+ * {@link AcknowledgementExecutor} implementation for SQS queues. Handle the
+ * messages deletion, usually requested by an
  * {@link ExecutingAcknowledgementProcessor}.
  *
  * @author Tomaz Fernandes
@@ -79,8 +80,7 @@ public class SqsAcknowledgementExecutor<T>
 			logger.debug("Executing acknowledgement for {} messages", messagesToAck.size());
 			Assert.notEmpty(messagesToAck, () -> "empty collection sent to acknowledge in queue " + this.queueName);
 			return deleteMessages(messagesToAck);
-		}
-		catch (Exception e) {
+		} catch (Exception e) {
 			return CompletableFutures.failedFuture(createAcknowledgementException(messagesToAck, e));
 		}
 	}
@@ -107,7 +107,13 @@ public class SqsAcknowledgementExecutor<T>
 				}
 				return CompletableFuture.<Void>completedFuture(null);
 			}),
-			t -> CompletableFutures.<Void>failedFuture(createAcknowledgementException(messagesToAck, t)))
+			t -> {
+			Throwable cause = t instanceof CompletionException && t.getCause() != null ? t.getCause() : t;
+			if (cause instanceof SqsAcknowledgementException) {
+				return CompletableFutures.<Void>failedFuture(cause);
+			}
+			return CompletableFutures.<Void>failedFuture(createAcknowledgementException(messagesToAck, t));
+		})
 			.whenComplete((v, t) -> logAckResult(messagesToAck, t, watch));
 	}
 
@@ -166,8 +172,7 @@ public class SqsAcknowledgementExecutor<T>
 			logger.error("Error acknowledging in queue {} messages {} in {}ms", this.queueName,
 					MessageHeaderUtils.getId(messagesToAck), totalTimeMillis,
 					t instanceof CompletionException ? t.getCause() : t);
-		}
-		else {
+		} else {
 			logger.trace("Done acknowledging in queue {} messages: {} in {}ms", this.queueName,
 					MessageHeaderUtils.getId(messagesToAck), totalTimeMillis);
 		}

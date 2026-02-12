@@ -2063,6 +2063,71 @@ NOTE: When `immediate acknowledgement` is set, as is the default for `FIFO` queu
 This can be useful for taking action such as retrying to delete the messages, or stopping the container to prevent duplicate processing in case an acknowledgement fails in a FIFO queue.
 For `batch parallel processing`, as is the default for `Standard` queues the callback execution happens asynchronously.
 
+=== Handling Partial Batch Failures
+
+When using `SqsTemplate` with `TemplateAcknowledgementMode#MANUAL` or `TemplateAcknowledgementMode#ON_SUCCESS` and `SendBatchFailureHandlingStrategy#THROW`, failures in batch operations can occur. In such cases, `Spring Cloud AWS` provides `SqsAcknowledgementException` to handle these failures.
+
+==== SqsAcknowledgementException
+
+`SqsAcknowledgementException` is thrown when a batch operation fails, and it contains information about both successful and failed acknowledgements.
+
+```java
+public class SqsAcknowledgementException extends RuntimeException {
+
+    private final Collection<Message<T>> successfullyAcknowledgedMessages;
+    private final Collection<Message<T>> failedAcknowledgementMessages;
+    private final String queue;
+
+    // Getters for the above fields
+}
+```
+
+==== Handling Partial Failures
+
+When a partial failure occurs, `SqsAcknowledgementException` will contain:
+
+- `successfullyAcknowledgedMessages`: Messages that were successfully acknowledged.
+- `failedAcknowledgementMessages`: Messages that failed to be acknowledged.
+- `queue`: The queue URL where the operation was performed.
+
+Example:
+
+```java
+@SqsListener("myQueue")
+public void listen(String message) {
+    System.out.println(message);
+}
+
+@Bean
+public SqsMessageListenerContainerFactory<Object> defaultSqsListenerContainerFactory(SqsAsyncClient sqsAsyncClient) {
+    return SqsMessageListenerContainerFactory
+        .builder()
+        .sqsAsyncClient(sqsAsyncClient)
+        .acknowledgementResultCallback(getAcknowledgementResultCallback())
+        .build();
+}
+
+private AcknowledgementResultCallback<Object> getAcknowledgementResultCallback() {
+    return new AcknowledgementResultCallback<Object>() {
+        @Override
+        public void onSuccess(Collection<Message<Object>> messages) {
+            // Handle successful acknowledgements
+        }
+
+        @Override
+        public void onFailure(Collection<Message<Object>> messages, Throwable t) {
+            if (t instanceof SqsAcknowledgementException sqsAckEx) {
+                Collection<Message<Object>> successfullyAcknowledgedMessages = sqsAckEx.getSuccessfullyAcknowledgedMessages();
+                Collection<Message<Object>> failedAcknowledgementMessages = sqsAckEx.getFailedAcknowledgementMessages();
+                String queue = sqsAckEx.getQueue();
+                
+                // Handle partial failures
+                // For example, retry failed messages or log the error
+            }
+        }
+    };
+}
+```
 
 === Global Configuration for @SqsListeners
 

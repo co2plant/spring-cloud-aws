@@ -23,9 +23,11 @@ import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
 
 import io.awspring.cloud.sqs.CompletableFutures;
+import io.awspring.cloud.sqs.MessageHeaderUtils;
 import io.awspring.cloud.sqs.SqsAcknowledgementException;
 import io.awspring.cloud.sqs.listener.QueueAttributes;
 import io.awspring.cloud.sqs.listener.SqsHeaders;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
@@ -37,6 +39,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageHeaders;
+import org.springframework.messaging.support.MessageBuilder;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.BatchResultErrorEntry;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageBatchRequest;
@@ -136,8 +139,10 @@ class SqsAcknowledgementExecutorTests {
 		given(queueAttributes.getQueueName()).willReturn(queueName);
 		given(queueAttributes.getQueueUrl()).willReturn(queueUrl);
 
-		BatchResultErrorEntry failedEntry = BatchResultErrorEntry.builder().id("test-id").code("ReceiptHandleIsInvalid")
-				.message("Receipt handle expired").build();
+		String expectedId = messageHeaders.getId().toString();
+
+		BatchResultErrorEntry failedEntry = BatchResultErrorEntry.builder().id(expectedId)
+				.code("ReceiptHandleIsInvalid").message("Receipt handle expired").build();
 
 		DeleteMessageBatchResponse partialFailureResponse = DeleteMessageBatchResponse.builder().failed(failedEntry)
 				.build();
@@ -149,8 +154,51 @@ class SqsAcknowledgementExecutorTests {
 		executor.setSqsAsyncClient(sqsAsyncClient);
 		executor.setQueueAttributes(queueAttributes);
 
-		assertThatThrownBy(() -> executor.execute(messages).join()).isInstanceOf(CompletionException.class)
-				.hasCauseInstanceOf(SqsAcknowledgementException.class);
+		assertThatThrownBy(() -> executor.execute(messages).join()).isInstanceOf(CompletionException.class).getCause()
+				.isInstanceOf(SqsAcknowledgementException.class).asInstanceOf(type(SqsAcknowledgementException.class))
+				.extracting(SqsAcknowledgementException::getFailedAcknowledgementMessages).asList()
+				.containsExactly(message);
+	}
+
+	@Test
+	void shouldClassifyMessagesOnPartialBatchFailure() {
+		Message<String> failMessage = MessageBuilder.withPayload("fail-payload")
+				.setHeader(SqsHeaders.SQS_RECEIPT_HANDLE_HEADER, "failReceiptHandle")
+				.build();
+		Message<String> successMessage = MessageBuilder.withPayload("success-payload")
+				.setHeader(SqsHeaders.SQS_RECEIPT_HANDLE_HEADER, "successReceiptHandle")
+				.build();
+
+		Collection<Message<String>> messages = Arrays.asList(failMessage, successMessage);
+
+		given(queueAttributes.getQueueName()).willReturn(queueName);
+		given(queueAttributes.getQueueUrl()).willReturn(queueUrl);
+
+		// failMessage의 UUID만 에러 응답에 포함
+		String failedId = MessageHeaderUtils.getId(failMessage);
+		BatchResultErrorEntry failedEntry = BatchResultErrorEntry.builder().id(failedId)
+				.code("ReceiptHandleIsInvalid").message("Receipt handle expired").build();
+
+		DeleteMessageBatchResponse partialFailureResponse = DeleteMessageBatchResponse.builder().failed(failedEntry)
+				.build();
+
+		given(sqsAsyncClient.deleteMessageBatch(any(DeleteMessageBatchRequest.class)))
+				.willReturn(CompletableFuture.completedFuture(partialFailureResponse));
+
+		SqsAcknowledgementExecutor<String> executor = new SqsAcknowledgementExecutor<>();
+		executor.setSqsAsyncClient(sqsAsyncClient);
+		executor.setQueueAttributes(queueAttributes);
+
+		assertThatThrownBy(() -> executor.execute(messages).join()).isInstanceOf(CompletionException.class).getCause()
+				.isInstanceOf(SqsAcknowledgementException.class).asInstanceOf(type(SqsAcknowledgementException.class))
+				.satisfies(cause -> {
+					assertThat(cause.getFailedAcknowledgementMessages())
+							.containsExactly(failMessage);
+					assertThat(cause.getSuccessfullyAcknowledgedMessages())
+							.containsExactly(successMessage);
+					assertThat(cause.getQueue())
+							.isEqualTo(queueUrl);
+				});
 	}
 
 }
